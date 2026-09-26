@@ -1,31 +1,32 @@
 # fmri-prep-flow
 
-A Singularity-based fMRI preprocessing workflow powered by fMRIPrep.
+A Singularity-based fMRI preprocessing workflow powered by **fMRIPrep 25.2.5**.
 
-用 **Singularity + fMRIPrep 25.2.5** 处理 BIDS 格式的 T1w 和 BOLD 数据，提供输入检查、可追溯的执行计划、逐次采集的产物检查、QC 图和结果 CSV。
+Process BIDS T1w and BOLD data with input validation, recorded execution plans,
+per-acquisition output checks, QC plots, and a CSV catalog of results.
 
 ```mermaid
 flowchart LR
-    A["BIDS 数据"] --> B["prepare<br/>选择与验证"]
-    B --> C["plan<br/>保存配置与命令"]
+    A["BIDS data"] --> B["prepare<br/>Select and validate"]
+    B --> C["plan<br/>Record settings and commands"]
     C --> D["run<br/>Singularity / fMRIPrep"]
-    D --> E["review<br/>人工 QC"]
-    E --> F["collect<br/>结果索引 CSV"]
+    D --> E["review<br/>Visual QC"]
+    E --> F["collect<br/>Results CSV"]
 ```
 
-## 支持范围
+## Scope
 
-- 单回波和多回波、固定 TR 的 BOLD；支持多个被试、session、task 和 run。
-- 每个选定 session 需要原始 T1w；按 session 建立解剖参考，按被试顺序执行容器任务。
-- 输出 `T1w` 和 `MNI152NLin2009cAsym:res-2` 空间的 BOLD、掩膜、confounds、变换和报告。
-- 不包含裸 NIfTI 转 BIDS、FreeSurfer 表面、CIFTI、时序去噪、平滑、GLM 或功能连接分析。
+- Single-echo and multi-echo BOLD with a fixed TR; multiple subjects, sessions, tasks, and runs.
+- Raw T1w images are required for each selected session. Anatomical references are built per session, and container jobs run sequentially by subject.
+- BOLD images and masks in `T1w` and `MNI152NLin2009cAsym:res-2` spaces, plus confounds, transforms, and reports.
+- NIfTI-to-BIDS conversion, FreeSurfer surfaces, CIFTI, temporal denoising, smoothing, GLM, and functional connectivity analysis are outside the scope of this tool.
 
-这是独立的流程封装，实际影像处理由 [fMRIPrep](https://fmriprep.org/) 完成。
+This is an independent workflow wrapper. Image processing is performed by [fMRIPrep](https://fmriprep.org/).
 
-## 安装
+## Installation
 
-需要 Linux、Python ≥ 3.10、可运行容器的 Singularity 和自己的 FreeSurfer license。
-在仓库根目录执行：
+Requirements: Linux, Python ≥ 3.10, a working Singularity installation, and your own FreeSurfer license.
+Run these commands from the repository root:
 
 ```bash
 python -m venv .venv
@@ -36,17 +37,17 @@ export FS_LICENSE=/absolute/path/to/license.txt
 fmri-prep-flow --version
 ```
 
-镜像固定到 OCI SHA256 摘要。首次运行需要下载镜像与 TemplateFlow 模板；命令中的 `docker://` 是镜像来源，不需要 Docker 服务。
+The container image is pinned to an OCI SHA256 digest. The first run downloads the image and TemplateFlow templates as needed. The `docker://` URI identifies the image source; a Docker daemon is not required.
 
-## 快速开始
+## Quick start
 
-### 1. 选择数据和处理策略
+### 1. Select inputs and processing settings
 
 ```bash
 fmri-prep-flow init --output project
 ```
 
-编辑生成的 `project/selection.json`：
+Edit the generated `project/selection.json`:
 
 ```json
 {
@@ -56,19 +57,19 @@ fmri-prep-flow init --output project
 }
 ```
 
-标签不带 `sub-`、`ses-`。还可以指定 `sessions`、`runs`、`acquisitions`、`directions`；省略的条件匹配全部，多回波始终整组选择。示例路径和标签需要替换成自己的数据。
+Use labels without prefixes such as `sub-` or `ses-`. Optional filters include `sessions`, `runs`, `acquisitions`, and `directions`; omitted filters match all values. Multi-echo acquisitions are always selected as complete echo groups. Replace the example paths and labels with those from your dataset.
 
-编辑 `project/config.json`，选择畸变矫正策略：
+Edit `project/config.json` to choose a susceptibility distortion correction (SDC) policy:
 
-| `sdc` | 适用条件 |
+| `sdc` | Behavior |
 | --- | --- |
-| `auto`（默认） | 有完整、关联正确且受支持的场图；没有则阻止计划。 |
-| `syn` | 明确选择基于解剖的校正；本工具要求真实的相位编码方向和总读出时间。 |
-| `none` | 研究方案明确不做畸变矫正；必须填写 `sdc_reason`。 |
+| `auto` (default) | Requires complete, correctly associated, supported fieldmaps. Planning fails if they are unavailable. |
+| `syn` | Explicitly requests anatomy-based SyN correction. This wrapper requires valid `PhaseEncodingDirection` and `TotalReadoutTime` metadata. |
+| `none` | Disables distortion correction. An explanation in `sdc_reason` is required. |
 
-不要为了通过检查而猜测采集参数。完整选项见 [配置说明](docs/configuration.md)。
+**SyN is not enabled by default.** `auto` does not fall back to SyN or silently disable SDC. Use acquisition metadata from the dataset rather than guessing missing values. See the [configuration reference](docs/configuration.md) for all options.
 
-### 2. 准备并运行
+### 2. Prepare and run
 
 ```bash
 fmri-prep-flow prepare --selection project/selection.json --output project/prepared
@@ -79,42 +80,46 @@ fmri-prep-flow run --plan project/run-01/plan.json
 fmri-prep-flow status --plan project/run-01/plan.json
 ```
 
-`prepare` 创建独立的 BIDS 副本并运行官方验证器。`plan` 保存实际命令和输入哈希；`run` 检查计划后在前台执行。服务器上可用 Slurm 或 tmux 管理作业。失败后保留现场，使用新输出目录重试。
+`prepare` creates an independent BIDS copy and runs the official validator. `plan` records the commands and input hashes; `run` verifies the plan and executes it in the foreground. Use Slurm or tmux to manage jobs on a server. After a failure, retain the existing run for inspection and create a new output directory to retry.
 
-### 3. 检查结果并导出
+### 3. Review and export
 
-打开 `project/run-01/sub-*/derivatives/sub-*.html` 和 `project/run-01/products/*/qc/`，检查脑提取、配准、畸变、信号缺失和头动，再填写 review 表单：
+Open `project/run-01/sub-*/derivatives/sub-*.html` and the plots in `project/run-01/products/*/qc/`. Inspect brain extraction, alignment, distortion, signal dropout, and motion before completing the review form:
 
 ```bash
 fmri-prep-flow review --plan project/run-01/plan.json --template project/review-form.json
-# 查看报告，填写 reviewer、各项 checks、decision 和 notes。
+# Inspect the reports and fill in reviewer, checks, decision, and notes.
 fmri-prep-flow review --plan project/run-01/plan.json --review project/review-form.json
 fmri-prep-flow collect --plan project/run-01/plan.json --output project/catalog.csv
 ```
 
-运行成功和人工 QC 是独立状态。未提交 review 也可导出 CSV，其中明确标记 `pending`；工具不会自动批准影像。CSV 每行对应一次采集的一个输出空间。
+Processing completion and human QC are tracked separately. You can export a CSV before submitting a review; its QC status will remain `pending`. Images are never automatically approved. Each CSV row describes one acquisition in one output space.
 
-## 仓库结构
+## Repository layout
 
 ```text
 src/fmri_prep_flow/
-├── cli.py        命令行参数与函数分发
-├── config.py     配置默认值与检查
-├── models.py     BIDS 采集身份
-├── inputs/       数据选择、审计、复制、BIDS 验证
-├── pipeline/     处理策略、Singularity 命令、计划与执行
-├── outputs/      产物检查、QC 图、人工审核、CSV
-└── common/       文件读写、哈希、环境记录
+├── cli.py        Argument parsing and command dispatch
+├── config.py     Configuration defaults and validation
+├── models.py     BIDS acquisition identities
+├── inputs/       Selection, audit, staging, and BIDS validation
+├── pipeline/     Policies, Singularity commands, planning, and execution
+├── outputs/      Output checks, QC plots, human review, and CSV export
+└── common/       File I/O, hashes, and environment records
 ```
 
-- [处理 protocol 与人工 QC](docs/protocol.md)
-- [按调用顺序读代码](docs/reading-guide.md)
-- [验证范围与已知限制](docs/validation.md)
-- [开发与测试](CONTRIBUTING.md)
+Detailed documentation is currently in Chinese:
 
-仓库只包含代码、文档、示例和合成数据测试。影像、容器、缓存、license 和个体报告由用户在本地管理。
+- [Configuration reference](docs/configuration.md)
+- [Processing protocol and visual QC](docs/protocol.md)
+- [Code reading guide](docs/reading-guide.md)
+- [Validation evidence and known limitations](docs/validation.md)
+- [Development and testing](CONTRIBUTING.md)
 
-## License 与引用
+The repository contains code, documentation, examples, and tests using synthetic data. Imaging data, containers, caches, licenses, and participant reports are managed locally.
 
-本仓库代码使用 [MIT License](LICENSE)。fMRIPrep、容器内软件和输入数据各自遵循其许可。
-论文方法应引用实际使用的 fMRIPrep 及相关工具；优先使用运行结果中的 `logs/CITATION.md`，并报告本流程版本、容器版本和校正策略。
+## License and citation
+
+This repository is distributed under the [MIT License](LICENSE). fMRIPrep, software bundled in its container, and input datasets retain their respective licenses.
+
+For publications, cite fMRIPrep and the tools used in your run. Use the generated `logs/CITATION.md` as a starting point, and report the workflow version, container version, and correction settings.
