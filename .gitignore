@@ -1,0 +1,42 @@
+# Python and local development
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.DS_Store
+.idea/
+.vscode/
+
+# Local projects, imaging data and generated reports
+/project/
+/data/
+/runs/
+/derivatives/
+/work/
+/cache/
+/outputs/
+/templateflow/
+/singularity-cache/
+/singularity-tmp/
+*.nii
+*.nii.gz
+*.mgz
+*.mgh
+*.dcm
+*.sif
+*.simg
+*.log
+
+# Credentials are supplied by the user, never distributed
+.env
+.env.*
+license.txt
+.license
+*.pem
+*.key

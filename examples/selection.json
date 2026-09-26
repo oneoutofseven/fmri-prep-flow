@@ -1,0 +1,5 @@
+{
+  "source_bids": "/data/my-bids",
+  "subjects": ["001", "002"],
+  "tasks": ["rest"]
+}
