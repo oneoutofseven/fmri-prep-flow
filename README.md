@@ -1,96 +1,167 @@
 # fmri-prep-flow
 
-Preprocess BIDS **T1w + BOLD** data with **Singularity and fMRIPrep 25.2.5**. Supports single-echo and multi-echo data; produces preprocessed images, confounds, QC reports, and a results CSV.
+Preprocess T1w and BOLD images with **fMRIPrep 25.2.5 and Singularity**. Supports single-echo and multi-echo data, with QC reports and a CSV of output paths.
 
-## 1. Install
+[Detailed usage](docs/usage.md) · [Configuration](docs/configuration.md) · [Protocol](docs/protocol.md)
 
-You need Linux, Python ≥ 3.10, Singularity, a FreeSurfer license, and a raw BIDS dataset with T1w and BOLD from the same session. The first run downloads the container and templates.
+## Install
+
+Requires Linux, Python 3.10+, Singularity, and a FreeSurfer license. The first run needs network access to download the container and templates. Docker is not required.
 
 ```bash
 git clone https://github.com/oneoutofseven/fmri-prep-flow.git
 cd fmri-prep-flow
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[validator]'
+python -m pip install -e '.[validator]'
 export FS_LICENSE=/absolute/path/to/license.txt
+singularity --version
 ```
 
-Replace the license path with your own. Singularity must already be installed; Docker is not required.
+Replace the license path with your own. Run the following commands from this repository directory.
 
-## 2. Configure
+## One subject: which files do I need?
+
+For a single-echo resting-state scan, start with these files from the **same subject and session**:
+
+| Your file | Contents |
+| --- | --- |
+| `T1w.nii.gz` | Raw 3D T1-weighted anatomical image. |
+| `rest.nii.gz` | Raw 4D BOLD image: all time points in one file. |
+| `rest.json` | Acquisition metadata for that BOLD image. Required fields include `TaskName`, `RepetitionTime`, and `EchoTime`. |
+| `T1w.json` | Anatomical acquisition metadata, if available. |
+
+Use the actual acquisition metadata; TR and TE are in seconds, and TR must match the NIfTI header. This example assumes `TaskName` is `rest`. If you only have a BOLD NIfTI without its metadata, obtain the metadata before proceeding.
+
+### 1. Put the files into a BIDS directory
+
+**Already have a raw BIDS dataset?** Skip this step and use its directory as `source_bids` in step 2.
+
+Otherwise, replace the `/path/to/` paths below with your files. These commands copy a single subject's images into the expected layout:
 
 ```bash
-fmri-prep-flow init --output project
+mkdir -p data/bids/sub-001/anat data/bids/sub-001/func
+cp /path/to/T1w.nii.gz data/bids/sub-001/anat/sub-001_T1w.nii.gz
+cp /path/to/rest.nii.gz data/bids/sub-001/func/sub-001_task-rest_bold.nii.gz
+cp /path/to/rest.json data/bids/sub-001/func/sub-001_task-rest_bold.json
+# If available:
+# cp /path/to/T1w.json data/bids/sub-001/anat/sub-001_T1w.json
+
+cat > data/bids/dataset_description.json <<'JSON'
+{
+  "Name": "My resting-state study",
+  "BIDSVersion": "1.9.0",
+  "DatasetType": "raw"
+}
+JSON
 ```
 
-Edit **`project/selection.json`** with your dataset path and subject/task labels:
+You now have:
+
+```text
+data/bids/
+├── dataset_description.json
+└── sub-001/
+    ├── anat/
+    │   └── sub-001_T1w.nii.gz
+    └── func/
+        ├── sub-001_task-rest_bold.nii.gz
+        └── sub-001_task-rest_bold.json
+```
+
+The optional T1w JSON goes next to the T1w image. `prepare` will check the images and validate this dataset; renaming files does not fix invalid images or missing metadata.
+
+### 2. Tell the tool which subject to process
+
+Create a project:
+
+```bash
+fmri-prep-flow init --output study
+```
+
+This generates `study/selection.json` and `study/config.json`. Replace **`study/selection.json`** with:
 
 ```json
 {
-  "source_bids": "/data/my-bids",
+  "source_bids": "../data/bids",
   "subjects": ["001"],
   "tasks": ["rest"]
 }
 ```
 
-Use `"001"` for `sub-001` and `"rest"` for `task-rest`. Add subjects to the list to process more people. Multi-echo acquisitions are selected automatically as complete groups.
+`source_bids` points to the directory containing `dataset_description.json`. Relative paths are resolved from `selection.json`, so `../data/bids` selects the directory above. For an existing dataset, use its absolute path instead. `"001"` selects `sub-001`; `"rest"` selects `task-rest`.
 
-In **`project/config.json`**, choose the `sdc` setting:
-
-| Value | When to use it |
-| --- | --- |
-| `"auto"` (default) | You have valid, associated fieldmaps. Planning stops if they are missing. |
-| `"syn"` | You explicitly want anatomy-based correction. Requires `PhaseEncodingDirection` and `TotalReadoutTime` in the BOLD metadata. |
-| `"none"` | You explicitly want no distortion correction. Also fill in `sdc_reason`. |
-
-**SyN is not enabled automatically.** For an intentionally uncorrected pilot, a complete `config.json` can be:
+For **this example without fieldmaps and with distortion correction explicitly disabled**, replace **`study/config.json`** with:
 
 ```json
 {
+  "nprocs": 8,
+  "omp_nthreads": 4,
+  "mem_mb": 32000,
   "sdc": "none",
   "sdc_reason": "Uncorrected pilot; residual distortion will be reviewed."
 }
 ```
 
-Other settings use their defaults: 8 CPU, 32 GB memory budget, and volume outputs in T1w and MNI152NLin2009cAsym 2 mm space. Choose the correction policy appropriate for your study.
+Choose SDC according to your study: `auto` uses valid associated fieldmaps; `syn` requests anatomy-based correction and requires `PhaseEncodingDirection` and `TotalReadoutTime`; `none` disables it and requires a reason. **The generated default is `auto`, not SyN; without fieldmaps it stops rather than switching methods.**
 
-## 3. Run
-
-```bash
-fmri-prep-flow doctor --config project/config.json
-fmri-prep-flow prepare --selection project/selection.json --output project/prepared
-fmri-prep-flow plan --staging project/prepared/staging.json \
-  --config project/config.json --output project/run-01
-fmri-prep-flow run --plan project/run-01/plan.json
-fmri-prep-flow status --plan project/run-01/plan.json
-```
-
-`prepare` copies and validates your selected inputs; `plan` saves the processing settings; `run` launches fMRIPrep and waits for completion. Use tmux or a scheduler for long jobs. Output directories must be new; use `run-02` for a retry.
-
-## 4. Check and export
-
-For the example above:
-
-- **HTML report:** `project/run-01/sub-001/derivatives/sub-001.html`
-- **BOLD and confounds:** `project/run-01/sub-001/derivatives/sub-001/func/`
-- **QC plots:** `project/run-01/products/sub-001_task-rest/qc/`
-- **Execution log:** `project/run-01/sub-001/engine.log`
-
-Inspect the reports, then generate and complete a review form:
+### 3. Run these files through fMRIPrep
 
 ```bash
-fmri-prep-flow review --plan project/run-01/plan.json --template project/review-form.json
+fmri-prep-flow doctor --config study/config.json
+fmri-prep-flow prepare --selection study/selection.json --output study/prepared
+fmri-prep-flow plan --staging study/prepared/staging.json \
+  --config study/config.json --output study/run-01
+fmri-prep-flow run --plan study/run-01/plan.json
+fmri-prep-flow status --plan study/run-01/plan.json
+fmri-prep-flow collect --plan study/run-01/plan.json --output study/catalog.csv
 ```
 
-Edit the form: enter your name in `reviewer`, mark every check `pass` or `fail`, add `notes`, and set each run's `decision` to `pass` only if all its checks pass. Then submit and export:
+`prepare` makes a validated copy of the inputs, `plan` saves the settings and commands, and `run` executes fMRIPrep in the foreground. Use new output directories; for a retry, create a new plan under `study/run-02`.
+
+## Multiple subjects or echoes
+
+For another subject, add `sub-002/anat/` and `sub-002/func/` under the same BIDS root, with `sub-002` filenames. Set `"subjects": ["001", "002"]` in the selection, then use new preparation and run directories. Subjects are processed sequentially.
+
+For multi-echo BOLD, supply **all** echoes with their corresponding metadata:
+
+```text
+sub-001/func/
+├── sub-001_task-rest_echo-1_bold.nii.gz
+├── sub-001_task-rest_echo-1_bold.json
+├── sub-001_task-rest_echo-2_bold.nii.gz
+└── sub-001_task-rest_echo-2_bold.json
+```
+
+Include `echo-3`, etc. when present. Each JSON must resolve the correct `EchoTime`; the echoes must have matching grids, frame counts, and TR. The same selection and run commands process them as one acquisition. Do not also include a single-echo copy of that acquisition.
+
+If your dataset has sessions, keep its `sub-001/ses-01/anat/` and `func/` structure and include the session label in filenames. Each selected session needs raw T1w anatomy. See the [usage guide](docs/usage.md#multiple-subjects-sessions-and-echoes) for selection filters.
+
+## Outputs and QC
+
+For the one-subject example:
+
+| Result | Location |
+| --- | --- |
+| Preprocessed BOLD and confounds | `study/run-01/sub-001/derivatives/sub-001/func/` |
+| fMRIPrep HTML report | `study/run-01/sub-001/derivatives/sub-001.html` |
+| Additional QC plots | `study/run-01/products/sub-001_task-rest/qc/` |
+| Execution log | `study/run-01/sub-001/engine.log` |
+| Output paths and QC status | `study/catalog.csv` |
+
+BOLD outputs are in T1w and MNI152NLin2009cAsym 2 mm space. They are **not temporally denoised**; nuisance regression, filtering, and connectivity analysis are downstream steps.
+
+Open the HTML report and QC plots to inspect alignment, brain coverage, and motion. The initial CSV records `human_qc=pending`. To record a review, generate a form:
 
 ```bash
-fmri-prep-flow review --plan project/run-01/plan.json --review project/review-form.json
-fmri-prep-flow collect --plan project/run-01/plan.json --output project/catalog.csv
+fmri-prep-flow review --plan study/run-01/plan.json --template study/review-form.json
 ```
 
-The CSV lists output paths and QC status. You can export before reviewing; the status remains `pending`.
+Fill in your name, every check, the overall decision, and notes. Submit it and export an updated CSV:
 
-**Preprocessed BOLD is not temporally denoised.** Nuisance regression, filtering, functional connectivity, and site harmonization are downstream steps.
+```bash
+fmri-prep-flow review --plan study/run-01/plan.json --review study/review-form.json
+fmri-prep-flow collect --plan study/run-01/plan.json --output study/catalog-reviewed.csv
+```
 
-[Full usage guide and troubleshooting](docs/usage.md) · [Configuration reference (Chinese)](docs/configuration.md) · [Validation](docs/validation.md) · [MIT License](LICENSE)
+[Review instructions](docs/usage.md#review-image-quality-and-export-a-catalog) · [Troubleshooting](docs/usage.md#troubleshooting) · [Validation](docs/validation.md) · [MIT License](LICENSE)
